@@ -13,8 +13,8 @@ class TurtlesimController(Node):
         super().__init__('turtlesim_controller')
 
         # ROS param declarations
-        self.declare_parameter('speed', 6.0)
-        self.declare_parameter('omega', 10.0)
+        self.declare_parameter('speed', 2.0)
+        self.declare_parameter('omega', 90.0)
 
         self.twist_pub = self.create_publisher(
             Twist,
@@ -131,73 +131,70 @@ class TurtlesimController(Node):
             self.turn(angle)
 
 
-    # Go to method
     def go_to(self, target_x, target_y):
         # 1. Várakozás, amíg a teknős "felébred" (megjön az első pozíció)
         while self.pose is None and rclpy.ok():
             self.get_logger().info('Várakozás a pozícióra...')
             rclpy.spin_once(self)
 
-        # 2. Beállítások (Ezek a P-szabályozó "erősítései")
-        Kp_linear = 1.0   # Mennyire siessen a cél felé?
-        Kp_angular = 4.0  # Mennyire agresszívan forduljon?
+        # 2. Beállítások (P-szabályozó erősítései)
+        Kp_linear = 1.0
+        Kp_angular = 4.0
 
-        distance_tolerance = 0.1 # Ha ennyire közel ér, akkor "ott vagyunk"
+        distance_tolerance = 0.1
 
-        # 3. A Ciklus (Closed Loop Control)
-        # Addig futunk, amíg a távolság nagyobb, mint a tűréshatár
-        distance = 100.0 # Kezdeti kamu érték, hogy belépjen a ciklusba
-
-        loop_rate = self.create_rate(20) # 20 Hz (másodpercenként 20-szor számol)
+        loop_rate = self.create_rate(20)  # 20 Hz
 
         while rclpy.ok():
-            # Hol vagyunk most?
             current_x = self.pose.x
             current_y = self.pose.y
             current_theta = self.pose.theta
 
-            # Távolság számítása (Pitagorasz tétel)
+            # SZÖG NORMALIZÁLÁS: -pi..pi közé
+            while current_theta > math.pi:
+                current_theta -= 2 * math.pi
+            while current_theta < -math.pi:
+                current_theta += 2 * math.pi
+
+            # Távolság
             dx = target_x - current_x
             dy = target_y - current_y
             distance = math.sqrt(dx**2 + dy**2)
 
-            # Ha elég közel vagyunk, lépjünk ki!
             if distance < distance_tolerance:
                 break
 
-            # Szög számítása (Milyen irányba kell menni?)
+            # Hova kell nézni?
             desired_theta = math.atan2(dy, dx)
             angular_error = desired_theta - current_theta
 
-            # SZÖG NORMALIZÁLÁS (Trükkös rész!)
-            # Ha pl. 350 fokot kellene fordulni balra, inkább forduljon 10 fokot jobbra.
+            # Szöghiba normalizálása -pi..pi közé
             if angular_error > math.pi:
                 angular_error -= 2 * math.pi
             elif angular_error < -math.pi:
                 angular_error += 2 * math.pi
 
-            # --- ITT VAN A LÉNYEG: P-SZABÁLYOZÓ ---
             cmd = Twist()
 
-            # A sebesség arányos a hibával (távolsággal)
-            # De korlátozzuk le max 2.0-ra, nehogy túlgyorsuljon
-            linear_speed = Kp_linear * distance
-            cmd.linear.x = min(linear_speed, 2.0)
+            # Ha nagyon félre áll, inkább először forduljon
+            if abs(angular_error) > 0.4:
+                cmd.linear.x = 0.0
+            else:
+                linear_speed = Kp_linear * distance
+                cmd.linear.x = min(linear_speed, 2.0)
 
-            # A forgás arányos a szögeltéréssel
             cmd.angular.z = Kp_angular * angular_error
 
-                # Parancs küldése
             self.twist_pub.publish(cmd)
 
-            # Frissítés
             rclpy.spin_once(self)
             loop_rate.sleep()
 
-        # 4. Megérkeztünk -> Állj meg!
+        # Megérkeztünk -> Állj meg!
         stop_cmd = Twist()
         self.twist_pub.publish(stop_cmd)
         self.get_logger().info(f'Megérkeztem: ({target_x}, {target_y})')
+
 
         # --- ÚJ: SEGÉD METÓDUSOK A RAJZOLÁSHOZ ---
 
@@ -273,13 +270,12 @@ class TurtlesimController(Node):
 def main(args=None):
     rclpy.init(args=args)
     tc = TurtlesimController()
-    #tc.go_straight(1.0, 4.0)
-    #tc.turn(90.0, 90.0)
-    #tc.go_straight(1.0, 4.0)
-    #tc.draw_square(speed=1.0, omega=90.0, a=3)
-    #tc.draw_poly(speed=1.0, omega=90.0, N=8, a=1)
-    tc.setup_drawing(x=1.0, y=7.0, theta=0.0)
 
+    tc.go_to(2.0, 2.0)
+    tc.go_to(8.0, 2.0)
+    tc.go_to(5.5, 8.0)
+
+    tc.setup_drawing(x=1.0, y=7.0, theta=0.0)
     tc.draw_snowflake(length=6.0, order=3)
 
     # Destroy the node explicitly
