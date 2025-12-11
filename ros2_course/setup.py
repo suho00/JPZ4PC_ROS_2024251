@@ -26,7 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             'hello = ros2_course.hello:main',
-            'topic_latcher = ros2_course.topic_latcher:main',
+            'turtle_controller = ros2_course.turtle_controller:main',
+            'turtlesim_controller = ros2_course.turtlesim_controller:main',
         ],
     },
 )
