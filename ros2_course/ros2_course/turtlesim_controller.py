@@ -5,7 +5,6 @@ from geometry_msgs.msg import Twist
 from turtlesim.msg import Pose
 from turtlesim.srv import TeleportAbsolute
 from turtlesim.srv import SetPen
-import numpy as np
 
 
 class TurtlesimController(Node):
@@ -31,6 +30,8 @@ class TurtlesimController(Node):
     # New method for TurtlesimController
     def cb_pose(self, msg):
         self.pose = msg
+        self.get_logger().info(f'Pose frissült: x={msg.x:.2f}, y={msg.y:.2f}, th={msg.theta:.2f}')
+
         #self.get_logger().info('Pose:' + str(self.pose))
 
     def go_straight(self, distance):
@@ -132,43 +133,61 @@ class TurtlesimController(Node):
 
 
     def go_to(self, target_x, target_y):
-        # 1. Várakozás, amíg a teknős "felébred" (megjön az első pozíció)
+        # 1. Várjuk meg, amíg megjön az első pozíció
         while self.pose is None and rclpy.ok():
-            self.get_logger().info('Várakozás a pozícióra...')
-            rclpy.spin_once(self)
+            self.get_logger().info('Várakozás a pozícióra... (pose még None)')
+            rclpy.spin_once(self, timeout_sec=0.1)
 
-        # 2. Beállítások (P-szabályozó erősítései)
-        Kp_linear = 1.0
-        Kp_angular = 4.0
+        if self.pose is None:
+            self.get_logger().error('Nincs pose, nem tudok szabályozni.')
+            return
+
+        self.get_logger().info(
+            f'go_to indult célra: x={target_x:.2f}, y={target_y:.2f}, '
+            f'aktuális: x={self.pose.x:.2f}, y={self.pose.y:.2f}, th={self.pose.theta:.2f}'
+        )
+
+        # --- P-szabályozó paraméterek ---
+        Kp_linear = 0.8
+        Kp_angular = 2.0
 
         distance_tolerance = 0.1
+        max_linear = 2.0
+        max_angular = 2.0  # rad/s
 
-        loop_rate = self.create_rate(20)  # 20 Hz
-
-        while rclpy.ok():
-            current_x = self.pose.x
-            current_y = self.pose.y
-            current_theta = self.pose.theta
-
-            # SZÖG NORMALIZÁLÁS: -pi..pi közé
-            while current_theta > math.pi:
-                current_theta -= 2 * math.pi
-            while current_theta < -math.pi:
-                current_theta += 2 * math.pi
-
-            # Távolság
-            dx = target_x - current_x
-            dy = target_y - current_y
-            distance = math.sqrt(dx**2 + dy**2)
-
-            if distance < distance_tolerance:
+        # Maximum iteráció, hogy végtelen ciklust biztosan elkerüljük
+        for i in range(500):  # 500 * 0.05s ≈ 25 másodperc
+            if not rclpy.ok():
                 break
 
-            # Hova kell nézni?
-            desired_theta = math.atan2(dy, dx)
-            angular_error = desired_theta - current_theta
+            if self.pose is None:
+                self.get_logger().warn('Pose None a ciklus közben!')
+                break
 
-            # Szöghiba normalizálása -pi..pi közé
+            x = self.pose.x
+            y = self.pose.y
+            theta = self.pose.theta
+
+            # Szög normalizálás -pi..pi közé
+            while theta > math.pi:
+                theta -= 2 * math.pi
+            while theta < -math.pi:
+                theta += 2 * math.pi
+
+            dx = target_x - x
+            dy = target_y - y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance < distance_tolerance:
+                self.get_logger().info(
+                    f'Kilépés: distance < tol ({distance:.3f} < {distance_tolerance})'
+                )
+                break
+
+            desired_theta = math.atan2(dy, dx)
+            angular_error = desired_theta - theta
+
+            # Szöghiba normalizálása
             if angular_error > math.pi:
                 angular_error -= 2 * math.pi
             elif angular_error < -math.pi:
@@ -176,24 +195,39 @@ class TurtlesimController(Node):
 
             cmd = Twist()
 
-            # Ha nagyon félre áll, inkább először forduljon
-            if abs(angular_error) > 0.4:
+            # Ha nagyon rossz irányba néz, inkább csak forduljon
+            if abs(angular_error) > 1.0:  # ~57°
                 cmd.linear.x = 0.0
             else:
-                linear_speed = Kp_linear * distance
-                cmd.linear.x = min(linear_speed, 2.0)
+                v = Kp_linear * distance
+                cmd.linear.x = min(v, max_linear)
 
-            cmd.angular.z = Kp_angular * angular_error
+            w = Kp_angular * angular_error
+            if w > max_angular:
+                w = max_angular
+            elif w < -max_angular:
+                w = -max_angular
+            cmd.angular.z = w
+
+            if i % 10 == 0:
+                self.get_logger().info(
+                    f'[go_to i={i}] pos=({x:.2f},{y:.2f}), dist={distance:.3f}, '
+                    f'ang_err={angular_error:.3f}, v={cmd.linear.x:.2f}, w={cmd.angular.z:.2f}'
+                )
 
             self.twist_pub.publish(cmd)
 
-            rclpy.spin_once(self)
-            loop_rate.sleep()
+            # Itt várunk egy kicsit, közben érkezik új pose
+            rclpy.spin_once(self, timeout_sec=0.05)
 
-        # Megérkeztünk -> Állj meg!
-        stop_cmd = Twist()
-        self.twist_pub.publish(stop_cmd)
-        self.get_logger().info(f'Megérkeztem: ({target_x}, {target_y})')
+        # Megállás
+        self.twist_pub.publish(Twist())
+        if self.pose is not None:
+            self.get_logger().info(
+                f'go_to vége. Végső pozíció: x={self.pose.x:.2f}, y={self.pose.y:.2f}, th={self.pose.theta:.2f}'
+            )
+        else:
+            self.get_logger().info('go_to vége. Pose None.')
 
 
         # --- ÚJ: SEGÉD METÓDUSOK A RAJZOLÁSHOZ ---
@@ -271,9 +305,11 @@ def main(args=None):
     rclpy.init(args=args)
     tc = TurtlesimController()
 
-    tc.go_to(2.0, 2.0)
-    tc.go_to(8.0, 2.0)
-    tc.go_to(5.5, 8.0)
+    tc.setup_drawing(x=8.5, y=5.5, theta=0.0)
+
+    tc.go_to(7.0, 9.0)
+    tc.go_to(9.0, 2.0)
+    tc.go_to(8.5, 8.0)
 
     tc.setup_drawing(x=1.0, y=7.0, theta=0.0)
     tc.draw_snowflake(length=6.0, order=3)
